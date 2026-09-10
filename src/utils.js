@@ -136,3 +136,21 @@ function formatDate_(date) {
   if (!d) return '';
   return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy/MM/dd');
 }
+
+/**
+ * 指定した列に値が入っている最終行を返す。
+ *
+ * 移行前のシートは ARRAYFORMULA が下まで伸びているため、getLastRow() が
+ * 2万行を超えることがあります。まず1列だけ読んで実際の行数を調べることで、
+ * 数十万セルを読み込まずに済ませます。
+ */
+function findLastDataRow_(sheet, keyColumn) {
+  var lastRow = Math.min(sheet.getLastRow(), MAX_SCAN_ROWS);
+  if (lastRow < 2) return 1;
+
+  var values = sheet.getRange(1, keyColumn, lastRow, 1).getValues();
+  for (var r = values.length - 1; r >= 1; r--) {
+    if (String(values[r][0]).trim() !== '') return r + 1;
+  }
+  return 1;
+}

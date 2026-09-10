@@ -117,6 +117,8 @@ test('deriveSource_ は購入URLから流入元を求める', () => {
 
   assert.strictEqual(S.deriveSource_('kenko-houjin_takacreww_01', '', kenko), 'takacreww');
   assert.strictEqual(S.deriveSource_('kenko-houjin_01', '', kenko), '本体');
+  // partnerSlugs に無い代理店は「本体」になる（移行前の数式と同じ）
+  assert.strictEqual(S.deriveSource_('kenko-houjin_unknownpartner_01', '', kenko), '本体');
   assert.strictEqual(
     S.deriveSource_('2026ai_surimun_surimun_invoice', '', ai),
     '2026ai_surimun_surimun_invoice'
@@ -125,10 +127,21 @@ test('deriveSource_ は購入URLから流入元を求める', () => {
   assert.strictEqual(S.deriveSource_('', '健康経営', kenko), '健康経営');
 });
 
-test('matchProductType_ は購入商品名から振り分け先を決める', () => {
-  assert.strictEqual(S.matchProductType_('健康経営優良法人').key, 'kenko');
-  assert.strictEqual(S.matchProductType_('AI導入補助金2026_invoice_AIすりむん').key, 'ai');
-  assert.strictEqual(S.matchProductType_('関係のない商品'), null);
+test('matchProductType_ は購入URLで振り分け先を決める', () => {
+  // 移行前の数式と同じく、購入URLの部分一致で判定する
+  assert.strictEqual(S.matchProductType_('kenko-houjin_takacreww_01', '健康経営優良法人').key, 'kenko');
+  assert.strictEqual(S.matchProductType_('kenko-houjin_01', '健康経営優良法人').key, 'kenko');
+  assert.strictEqual(
+    S.matchProductType_('2026ai_surimun_surimun_invoice', 'AI導入補助金2026_invoice_AIすりむん').key,
+    'ai'
+  );
+  assert.strictEqual(S.matchProductType_('kankeinai_lp_01', '関係のない商品'), null);
+});
+
+test('matchProductType_ は購入URLが当てはまらなければ既定では取り込まない', () => {
+  // ALSO_MATCH_BY_PRODUCT が false のあいだは、商品名だけでは拾わない
+  assert.strictEqual(S.ALSO_MATCH_BY_PRODUCT, false);
+  assert.strictEqual(S.matchProductType_('atarashii-lp_01', '健康経営優良法人'), null);
 });
 
 test('judgeDocsReady_ は4つ揃ったときだけ完了にする', () => {
@@ -143,6 +156,8 @@ test('judgeDocsReady_ は4つ揃ったときだけ完了にする', () => {
   assert.strictEqual(S.judgeDocsReady_(row('受領', '対象外', '受領', '対象外'), docCols), '完了');
   assert.strictEqual(S.judgeDocsReady_(row('受領', '依頼済', '受領', '受領'), docCols), '');
   assert.strictEqual(S.judgeDocsReady_(row('', '', '', ''), docCols), '');
+  // 移行前の REGEXMATCH と同じく部分一致で判定する
+  assert.strictEqual(S.judgeDocsReady_(row('受領済', '受領', '対象外', '受領'), docCols), '完了');
 });
 
 // 案件管理シートの列位置（健康経営シートに合わせたもの）
@@ -159,30 +174,45 @@ function projectRow(overrides) {
   return r;
 }
 
-test('judgeAlert_ は契約済みなのに LINE未追加の案件を拾う', () => {
-  const row = projectRow({ contractDate: new Date(2026, 8, 1), lineAdded: '' });
+test('needsLineAdded_ は LINE追加が必要な対応状況を見分ける', () => {
+  assert.strictEqual(S.needsLineAdded_('成約'), true);
+  assert.strictEqual(S.needsLineAdded_('請求書送付済'), true);
+  assert.strictEqual(S.needsLineAdded_('入金確認済'), true);
+  assert.strictEqual(S.needsLineAdded_('書類回収中'), true);
+  assert.strictEqual(S.needsLineAdded_('検討中'), false);
+  assert.strictEqual(S.needsLineAdded_(''), false);
+});
+
+test('judgeAlert_ は成約以降なのに LINE未追加の案件を拾う', () => {
+  const row = projectRow({ status: '成約', lineAdded: '' });
   assert.strictEqual(S.judgeAlert_(row, COL, 3), 'LINE未追加');
 });
 
 test('judgeAlert_ は LINE追加済みならそのアラートを出さない', () => {
-  const row = projectRow({ contractDate: new Date(2026, 8, 1), lineAdded: '済' });
+  const row = projectRow({ status: '成約', lineAdded: '済' });
+  assert.strictEqual(S.judgeAlert_(row, COL, 3), '');
+});
+
+test('judgeAlert_ は成約前の案件に LINE未追加を出さない', () => {
+  const row = projectRow({ status: '検討中', lineAdded: '' });
   assert.strictEqual(S.judgeAlert_(row, COL, 3), '');
 });
 
 test('judgeAlert_ は7日以上動いていない案件を停滞にする', () => {
-  const row = projectRow({});
+  const row = projectRow({ status: '検討中' });
   assert.strictEqual(S.judgeAlert_(row, COL, 7), '停滞 7日');
   assert.strictEqual(S.judgeAlert_(row, COL, 6), '');
 });
 
-test('judgeAlert_ は2つのアラートを並べて出す', () => {
-  const row = projectRow({ contractDate: new Date(2026, 8, 1), lineAdded: '' });
-  assert.strictEqual(S.judgeAlert_(row, COL, 10), 'LINE未追加 / 停滞 10日');
+test('judgeAlert_ は LINE未追加 を優先し、停滞と併記しない', () => {
+  // 移行前の数式と同じく、片方だけを表示する
+  const row = projectRow({ status: '成約', lineAdded: '' });
+  assert.strictEqual(S.judgeAlert_(row, COL, 30), 'LINE未追加');
 });
 
 test('judgeAlert_ は認定日が入った案件を空欄にする', () => {
   const row = projectRow({
-    contractDate: new Date(2026, 8, 1),
+    status: '成約',
     lineAdded: '',
     approval: new Date(2026, 8, 9),
   });
@@ -202,4 +232,27 @@ test('buildHeaderIndex_ と findColumn_ は見出し違いを吸収する', () =
 
 test('compareOrderKeys_ は受注IDを数値順に並べる', () => {
   assert.deepStrictEqual(['100', '9', '58'].sort(S.compareOrderKeys_), ['9', '58', '100']);
+});
+
+test('TEMPLATE_STAGE_OFFSET は 01_運用フロー どおりの 0 が初期値', () => {
+  // 0 = 商談済(3) で T-01 が ★次。マニュアルの記載と一致する
+  assert.strictEqual(S.TEMPLATE_STAGE_OFFSET, 0);
+
+  const shoudanzumi = STAGE(3, '商談済', 'MTG御礼＋資料送付');
+  assert.strictEqual(S.judgeTemplate_('T-01', shoudanzumi, false, FLOW, {}, '1001'), S.MARK.NEXT);
+
+  // 移行前のスプレッドシートは MTG予約済(2) で T-01 が ★次 になっていた
+  const yoyakuzumi = STAGE(2, 'MTG予約済', '（予約ツールが自動送信）');
+  assert.strictEqual(S.judgeTemplate_('T-01', yoyakuzumi, false, FLOW, {}, '1001'), S.MARK.NONE);
+});
+
+test('judgeTemplate_ は T-03 と T-04 を同時に ★次 にしない', () => {
+  // 移行前は L列の数式が K列のコピーになっており、両方が ★次 になっていた
+  const saiteian = STAGE(5, '再提案中', '検討中フォロー②');
+  assert.strictEqual(S.judgeTemplate_('T-03', saiteian, false, FLOW, {}, '1001'), S.MARK.NEXT);
+  assert.strictEqual(S.judgeTemplate_('T-04', saiteian, false, FLOW, {}, '1001'), S.MARK.NONE);
+
+  const keiyakusoufu = STAGE(6, '契約書送付予定', '契約書送付のご案内');
+  assert.strictEqual(S.judgeTemplate_('T-03', keiyakusoufu, false, FLOW, {}, '1001'), S.MARK.SENT_ASSUMED);
+  assert.strictEqual(S.judgeTemplate_('T-04', keiyakusoufu, false, FLOW, {}, '1001'), S.MARK.NEXT);
 });

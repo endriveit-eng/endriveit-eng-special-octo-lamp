@@ -140,7 +140,8 @@ function updateOneProjectSheet_(sheet, type, extract, today) {
 /** いまシートに入っている行を { 受注ID: 行の配列 } にする */
 function readExistingRows_(sheet, width, orderIdCol) {
   var map = {};
-  var lastRow = sheet.getLastRow();
+  // ARRAYFORMULA が下まで伸びていても、受注IDが入っている行までしか読まない
+  var lastRow = findLastDataRow_(sheet, orderIdCol);
   if (lastRow < 2) return map;
 
   var values = sheet.getRange(2, 1, lastRow - 1, width).getValues();
@@ -185,10 +186,10 @@ function buildProjectRow_(width, col, docCols, autoCols, rec, kept, type, today,
     row[col.updated - 1] = kept[col.updated - 1];
   }
 
-  // 請求金額 = 契約総額 ÷ 支払回数（端数は最終回で調整してください）
+  // 請求金額 = 契約総額 ÷ 支払回数 を四捨五入（端数は最終回で調整してください）
   var total = toNumber_(row[col.total - 1]);
   var times = toNumber_(row[col.installments - 1]);
-  row[col.perInstallment - 1] = (total !== null && times) ? total / times : '';
+  row[col.perInstallment - 1] = (total !== null && times) ? Math.round(total / times) : '';
 
   // 書類そろい
   row[col.docsReady - 1] = judgeDocsReady_(row, docCols);
@@ -212,7 +213,8 @@ function judgeDocsReady_(row, docCols) {
     var value = normalizeText_(row[docCols[i] - 1]);
     var done = false;
     for (var d = 0; d < DOC_DONE_VALUES.length; d++) {
-      if (normalizeText_(DOC_DONE_VALUES[d]) === value) { done = true; break; }
+      // 移行前は REGEXMATCH の部分一致だったので、含まれていれば完了とみなす
+      if (value && value.indexOf(normalizeText_(DOC_DONE_VALUES[d])) >= 0) { done = true; break; }
     }
     if (!done) return '';
   }
@@ -220,25 +222,32 @@ function judgeDocsReady_(row, docCols) {
 }
 
 /**
- * アラートを決める。
- *   LINE未追加 … 契約締結日が入っているのに LINE追加 が「済」でない
- *   停滞 ○日   … ecforce の更新日から STALL_THRESHOLD_DAYS 日以上動いていない
+ * アラートを決める（移行前の数式と同じ考え方）。
  *   認定日（交付決定日）が入っていれば、完了扱いで空欄
+ *   LINE未追加 … 対応状況が LINE_REQUIRED_STATUSES のどれかなのに ★LINE追加 が「済」でない
+ *   停滞 ○日   … ecforce の更新日から STALL_THRESHOLD_DAYS 日以上動いていない
+ * LINE未追加 が出るときは、停滞は出しません（片方だけを表示します）。
  */
 function judgeAlert_(row, col, stall) {
   if (String(row[col.approval - 1] || '').trim() !== '') return '';
 
-  var alerts = [];
-
-  var contracted = String(row[col.contractDate - 1] || '').trim() !== '';
   var lineAdded = normalizeText_(row[col.lineAdded - 1]) === normalizeText_('済');
-  if (contracted && !lineAdded) alerts.push('LINE未追加');
+  if (needsLineAdded_(row[col.status - 1]) && !lineAdded) return 'LINE未追加';
 
   if (typeof stall === 'number' && stall >= STALL_THRESHOLD_DAYS) {
-    alerts.push('停滞 ' + stall + '日');
+    return '停滞 ' + stall + '日';
   }
+  return '';
+}
 
-  return alerts.join(' / ');
+/** LINE追加が済んでいるべき対応状況かどうか */
+function needsLineAdded_(status) {
+  var key = normalizeText_(status);
+  if (!key) return false;
+  for (var i = 0; i < LINE_REQUIRED_STATUSES.length; i++) {
+    if (key.indexOf(normalizeText_(LINE_REQUIRED_STATUSES[i])) >= 0) return true;
+  }
+  return false;
 }
 
 /** 書き込み。行が減ったぶんは消す */
@@ -279,25 +288,22 @@ function collectAlerts_(rows, col, type) {
 
 /**
  * 購入URL から流入元を求める。
- *   'slug' … kenko-houjin_takacreww_01 → takacreww ／ kenko-houjin_01 → 本体
- *   'raw'  … 購入URLをそのまま使う
+ *   'partner' … 購入URLに代理店名が含まれていればその名前、無ければ「本体」
+ *               （移行前の =IF(REGEXMATCH(購入URL,"takacreww"),"takacreww","本体") と同じ）
+ *   'raw'     … 購入URLをそのまま使う
+ * 代理店が増えたら config.js の partnerSlugs に足してください。
  */
 function deriveSource_(purchaseUrl, adGroup, type) {
   var url = String(purchaseUrl || '').trim();
   if (!url) return String(adGroup || '').trim();
-  if (type.sourceRule !== 'slug') return url;
+  if (type.sourceRule !== 'partner') return url;
 
-  var rest = url;
-  if (type.sourcePrefix && rest.indexOf(type.sourcePrefix) === 0) {
-    rest = rest.slice(type.sourcePrefix.length);
+  var slugs = type.partnerSlugs || [];
+  var key = normalizeText_(url);
+  for (var i = 0; i < slugs.length; i++) {
+    if (key.indexOf(normalizeText_(slugs[i])) >= 0) return slugs[i];
   }
-  rest = rest.replace(/^[_-]+/, '');
-
-  var parts = rest.split('_').filter(function (p) { return p !== ''; });
-  // 末尾の連番（_01 など）を落とす
-  while (parts.length && /^\d+$/.test(parts[parts.length - 1])) parts.pop();
-
-  return parts.length ? parts.join('_') : DIRECT_SOURCE_LABEL;
+  return DIRECT_SOURCE_LABEL;
 }
 
 /** 受注IDの並べ替え用（数字は数字として比べる） */
@@ -314,7 +320,7 @@ function compareOrderKeys_(a, b) {
  */
 function loadExtract_(ss) {
   var sheet = getSheet_(ss, SHEET_NAMES.EXTRACT);
-  var lastRow = sheet.getLastRow();
+  var lastRow = findLastDataRow_(sheet, 1);
   var byType = {};
   PROJECT_SHEET_TYPES.forEach(function (t) { byType[t.key] = []; });
 
@@ -347,13 +353,14 @@ function loadExtract_(ss) {
     seen[id] = true;
 
     var product = String(values[r][col.product - 1] || '');
-    var type = matchProductType_(product);
+    var purchaseUrl = col.purchaseUrl ? values[r][col.purchaseUrl - 1] : '';
+    var type = matchProductType_(purchaseUrl, product);
     if (!type) continue;
 
     byType[type.key].push({
       orderId: id,
       orderIdRaw: raw,
-      purchaseUrl: col.purchaseUrl ? values[r][col.purchaseUrl - 1] : '',
+      purchaseUrl: purchaseUrl,
       status: values[r][col.status - 1],
       email: col.email ? values[r][col.email - 1] : '',
       name: col.name ? values[r][col.name - 1] : '',
@@ -372,12 +379,29 @@ function loadExtract_(ss) {
   return { byType: byType };
 }
 
-/** 購入商品名から、どの案件管理シートに入れるか決める */
-function matchProductType_(product) {
-  var target = normalizeText_(product);
-  for (var i = 0; i < PROJECT_SHEET_TYPES.length; i++) {
+/**
+ * どの案件管理シートに入れるか決める。
+ *
+ * 移行前は購入URLだけで振り分けていました（05_健康経営 は "kenko-houjin"、
+ * 05_AI導入補助金 は "surimun_invoice" を含むかどうか）。同じ挙動にしています。
+ * ALSO_MATCH_BY_PRODUCT を true にすると、購入URLが当てはまらないときに
+ * 購入商品名でも探します。
+ */
+function matchProductType_(purchaseUrl, product) {
+  var url = normalizeText_(purchaseUrl);
+  var i;
+
+  for (i = 0; i < PROJECT_SHEET_TYPES.length; i++) {
+    var pattern = normalizeText_(PROJECT_SHEET_TYPES[i].urlPattern);
+    if (pattern && url && url.indexOf(pattern) >= 0) return PROJECT_SHEET_TYPES[i];
+  }
+
+  if (!ALSO_MATCH_BY_PRODUCT) return null;
+
+  var name = normalizeText_(product);
+  for (i = 0; i < PROJECT_SHEET_TYPES.length; i++) {
     var keyword = normalizeText_(PROJECT_SHEET_TYPES[i].productKeyword);
-    if (keyword && target.indexOf(keyword) >= 0) return PROJECT_SHEET_TYPES[i];
+    if (keyword && name && name.indexOf(keyword) >= 0) return PROJECT_SHEET_TYPES[i];
   }
   return null;
 }

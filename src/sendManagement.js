@@ -29,8 +29,15 @@ function updateSendManagement_(ss, today) {
   var sentLog = loadSentLog_(ss);
   var sheet = getSheet_(ss, SHEET_NAMES.SEND_MGMT);
 
-  var lastRow = sheet.getLastRow();
-  if (lastRow < 2) return { rows: 0, nextCount: 0, next: [] };
+  // 受注ID列と主担当マスタ(S列)の、値が入っている最終行までしか読まない
+  var lastRow = Math.max(
+    findLastDataRow_(sheet, SEND_MGMT_COL.ORDER_ID),
+    findLastDataRow_(sheet, SEND_MGMT_COL.OWNER_ID)
+  );
+  if (lastRow < 2) {
+    clearBelow_(sheet, 2);
+    return { rows: 0, nextCount: 0, next: [] };
+  }
 
   var width = Math.max(sheet.getLastColumn(), SEND_MGMT_COL.OWNER_NAME);
   var values = sheet.getRange(1, 1, lastRow, width).getValues();
@@ -94,6 +101,9 @@ function updateSendManagement_(ss, today) {
   // 経過日数は必ず数値で表示する（日付表示になる問題の対策）
   sheet.getRange(2, SEND_MGMT_COL.DAYS, out.length, 1).setNumberFormat('0');
 
+  // 移行前の数式が下まで伸びている分を消す
+  clearBelow_(sheet, out.length + 2);
+
   return { rows: rowCount, nextCount: next.length, next: next };
 }
 
@@ -132,9 +142,21 @@ function judgeTemplate_(templateId, stageRow, isLost, flow, sentLog, orderId) {
   var templateStage = flow.stageByTemplate[templateId];
   if (templateStage === undefined) return MARK.NONE;
 
-  if (templateStage < stageRow.order) return MARK.SENT_ASSUMED;
-  if (templateStage === stageRow.order) return MARK.NEXT;
+  // TEMPLATE_STAGE_OFFSET が 0 なら 01_運用フロー のとおり、
+  // -1 なら移行前のスプレッドシートと同じ（1段階早い）判定になる
+  var targetStage = templateStage + TEMPLATE_STAGE_OFFSET;
+
+  if (targetStage < stageRow.order) return MARK.SENT_ASSUMED;
+  if (targetStage === stageRow.order) return MARK.NEXT;
   return MARK.NONE;
+}
+
+/** G〜O列 の、指定行から下に残っている内容を消す */
+function clearBelow_(sheet, firstRow) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < firstRow) return;
+  var numCols = SEND_MGMT_COL.OWNER - SEND_MGMT_COL.STAGE + 1;
+  sheet.getRange(firstRow, SEND_MGMT_COL.STAGE, lastRow - firstRow + 1, numCols).clearContent();
 }
 
 /** 見送り扱いの対応状況かどうか */

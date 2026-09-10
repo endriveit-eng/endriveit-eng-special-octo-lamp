@@ -58,6 +58,18 @@ var FLOW_COL = {
 };
 
 /**
+ * テンプレを「★次」にする段階のずらし幅。
+ *
+ *   0  … 01_運用フロー のとおり。商談済(3) で T-01 が ★次 になる。
+ *         マニュアルの「3 商談済 … ここで T-01 を送ります」と一致します。
+ *  -1  … 移行前のスプレッドシートと同じ挙動。MTG予約済(2) で T-01 が ★次 になる。
+ *
+ * 移行前の数式は -1 相当でしたが、MTGを実施する前に「MTG御礼」を送る指示に
+ * なってしまうため、0（マニュアルどおり）を初期値にしています。
+ */
+var TEMPLATE_STAGE_OFFSET = 0;
+
+/**
  * 抽出シートの列は見出しの文字で探します。
  * ecforce の出力見出しが変わったら、ここに新しい表記を足してください。
  */
@@ -104,47 +116,59 @@ var PROJECT_HEADERS = {
 /** 案件管理シートだと判定するための見出し（この列があれば案件管理シート） */
 var PROJECT_SHEET_SIGNATURE = '★契約締結日';
 
-/** 書類欄で「そろった」とみなす値 */
+/**
+ * 書類欄で「そろった」とみなす値（部分一致）。
+ * 移行前は 05_健康経営 だけ「受領」しか認めておらず、
+ * 「対象外」を選んでも完了になりませんでした。
+ * マニュアルの記載と 05_AI導入補助金 に合わせて、両方を認めます。
+ */
 var DOC_DONE_VALUES = ['受領', '対象外'];
+
+/**
+ * 「LINE未追加」のアラートを出す対応状況。
+ * この状態なのに ★LINE追加 が「済」でなければアラートを出します。
+ * 移行前の数式と同じ内容です（01_運用フロー の8段階には無い状態も含みます）。
+ */
+var LINE_REQUIRED_STATUSES = ['成約', '請求書送付済', '入金確認済', '書類回収中'];
 
 /**
  * 案件管理シートの種類。
  * シート名ではなく「そのシートにしかない見出し」で見分けるので、
- * タブ名を変えても動きます。
+ * タブ名（05_健康経営 など）を変えても動きます。
  */
 var PROJECT_SHEET_TYPES = [
   {
     key: 'kenko',
     label: '健康経営',
-    // 抽出シートの「購入商品（商品名）」にこの文字が含まれる行を取り込む
-    productKeyword: '健康経営',
-    // このシートにしかない見出し
     signatureHeader: '★労働保険',
-    // 流入元の求め方（'slug' = 購入URLから代理店名を切り出す / 'raw' = 購入URLそのまま）
-    sourceRule: 'slug',
-    // sourceRule が 'slug' のときに購入URLから取り除く先頭の文字
-    sourcePrefix: 'kenko-houjin',
+    urlPattern: 'kenko-houjin',
+    productKeyword: '健康経営',
+    sourceRule: 'partner',
+    partnerSlugs: ['takacreww'],
   },
   {
     key: 'ai',
     label: 'AI導入補助金',
-    productKeyword: 'AI導入補助金',
     signatureHeader: '★gBizIDプライム',
+    urlPattern: 'surimun_invoice',
+    productKeyword: 'AI導入補助金',
     sourceRule: 'raw',
-    sourcePrefix: '',
+    partnerSlugs: [],
   },
 ];
 
-/** 自社経由（代理店を経由しない）ときに流入元へ入れる文字 */
-var DIRECT_SOURCE_LABEL = '本体';
-
 /**
- * 日次サマリの送信先。
- * ここには書かず、スクリプトプロパティ NOTIFY_EMAILS にカンマ区切りで入れてください
- * （拡張機能 → Apps Script → プロジェクトの設定 → スクリプト プロパティ）。
- * 未設定なら、実行した本人のアドレスに送ります。
+ * 購入URLが当てはまらなくても、購入商品名で振り分けるかどうか。
+ *
+ * false … 移行前と同じ。購入URLだけで判定します。
+ * true  … 購入URLが当てはまらない場合、購入商品名でも探します。
+ *          新しいLPを作って購入URLが変わったときに取りこぼさなくなりますが、
+ *          これまで案件管理シートに出てこなかった受注が出てくる場合があります。
  */
-var NOTIFY_EMAILS_PROPERTY = 'NOTIFY_EMAILS';
+var ALSO_MATCH_BY_PRODUCT = false;
+
+/** 代理店を経由しないときに流入元へ入れる文字 */
+var DIRECT_SOURCE_LABEL = '本体';
 
 /**
  * 「もう送らない」扱いにする対応状況。
@@ -154,11 +178,11 @@ var LOST_STATUSES = ['見送り'];
 
 /** テンプレ欄に出す文字 */
 var MARK = {
-  NEXT: '★次',          // いま送るべきもの
-  SENT_LOGGED: '送信済',      // 04_送信ログ に記録があるもの（事実）
-  SENT_ASSUMED: '送信済(推定)', // 対応状況から通過済とみなしたもの（記録なし）
-  NONE: '-',            // まだ先、または送らないもの
-  UNKNOWN: '?',         // 対応状況がマスタに無い
+  NEXT: '★次',
+  SENT_LOGGED: '送信済',
+  SENT_ASSUMED: '送信済(推定)',
+  NONE: '-',
+  UNKNOWN: '?',
 };
 
 /** 送るものもアラートも無い日にサマリメールを送るか（false なら送らない） */
@@ -166,3 +190,11 @@ var SEND_EMPTY_DIGEST = false;
 
 /** 毎朝の自動実行を何時台に走らせるか（0〜23／スクリプトのタイムゾーン基準） */
 var TRIGGER_HOUR = 8;
+
+/**
+ * 読み込む行数の上限。
+ * 移行前のシートは ARRAYFORMULA が下まで伸びていて、
+ * 実データが数行でも最終行が2万行を超えます。
+ * まず受注ID列だけを見て実際の行数を調べるので、無駄な読み込みをしません。
+ */
+var MAX_SCAN_ROWS = 50000;
