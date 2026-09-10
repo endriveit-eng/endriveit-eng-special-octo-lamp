@@ -23,8 +23,12 @@
 ## 1. 必要なもの
 
 - Node.js 18以上（`node -v` で確認）
-- スプレッドシートの編集権限
+- **スプレッドシートの編集権限**
 - Google アカウント
+
+編集権限があるかは、スプレッドシートを開いて `拡張機能` メニューに `Apps Script` が出るかで分かります。
+出ない場合は閲覧権限しかありません。所有者（kuwa9800@gmail.com）に編集権限をもらうか、
+所有者の方にこの手順を実施してもらってください。
 
 ```bash
 node -v
@@ -35,8 +39,9 @@ node -v
 ## 2. リポジトリを用意する
 
 ```bash
-git clone https://github.com/endriveit-eng/special-octo-lamp.git
-cd special-octo-lamp
+git clone https://github.com/endriveit-eng/endriveit-eng-special-octo-lamp.git
+cd endriveit-eng-special-octo-lamp
+git checkout claude/special-octo-lamp-ogdb2b
 npm install
 npm test
 ```
