@@ -1,0 +1,18 @@
+# clasp（スクリプトIDと認証情報。リポジトリには入れない）
+.clasp.json
+.clasprc.json
+
+# Node
+node_modules/
+npm-debug.log*
+package-lock.json
+
+# エクスポートした受注データなど（顧客情報を含むため絶対にコミットしない）
+*.csv
+*.tsv
+*.xlsx
+data/
+
+# OS
+.DS_Store
+Thumbs.db

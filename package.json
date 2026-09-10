@@ -1,0 +1,17 @@
+{
+  "name": "ecforce-mail-task-gas",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ECフォースメールタスク（Googleスプレッドシート）の Google Apps Script",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "check": "for f in src/*.js; do node --check \"$f\" || exit 1; done",
+    "login": "clasp login",
+    "push": "clasp push",
+    "pull": "clasp pull",
+    "open": "clasp open"
+  },
+  "devDependencies": {
+    "@google/clasp": "^2.4.2"
+  }
+}
